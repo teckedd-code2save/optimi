@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-primary: #fafaf9;
+    --bg-card: #ffffff;
+    --bg-elevated: #f5f5f4;
+    --bg-hover: #e7e5e4;
+    --border-default: #e7e5e4;
+    --text-primary: #1c1917;
+    --text-secondary: #57534e;
+    --text-tertiary: #a8a29e;
+    --text-muted: #d6d3d1;
+    --accent-primary: #4f46e5;
+    --accent-primary-hover: #4338ca;
+    --accent-success: #10b981;
+    --accent-warning: #f59e0b;
+    --accent-danger: #f43f5e;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-[var(--bg-primary)] text-[var(--text-primary)] font-sans antialiased;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@layer components {
+  .card-optimi {
+    @apply bg-white rounded-xl border border-[var(--border-default)] shadow-sm;
+  }
+
+  .btn-primary {
+    @apply bg-[var(--accent-primary)] text-white font-medium rounded-lg px-4 py-2.5;
+    @apply shadow-[0_1px_2px_rgba(79,70,229,0.15)];
+    @apply hover:bg-[var(--accent-primary-hover)] hover:shadow-[0_2px_4px_rgba(79,70,229,0.2)] hover:-translate-y-px;
+    @apply active:translate-y-0 active:shadow-[0_1px_1px_rgba(79,70,229,0.15)];
+    @apply transition-all duration-150 ease-out;
+  }
+
+  .btn-secondary {
+    @apply bg-white text-[var(--text-primary)] font-medium rounded-lg px-4 py-2.5;
+    @apply border border-[var(--border-default)];
+    @apply hover:bg-[var(--bg-hover)] hover:border-[var(--accent-primary)];
+    @apply transition-all duration-150 ease-out;
+  }
+
+  .btn-ghost {
+    @apply text-[var(--text-secondary)] font-medium rounded-lg px-3 py-2;
+    @apply hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)];
+    @apply transition-all duration-150 ease-out;
+  }
+}

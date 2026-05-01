@@ -1,0 +1,28 @@
+# ============================================================================
+# Caddy — Multi-site config for serendepify-vps
+# Managed here but manually copied to /etc/caddy/Caddyfile on the VPS
+# because the caddy user cannot read through root-owned symlinks.
+# ============================================================================
+
+# ─── Placeholder sites for future projects ───
+:2015 {
+	respond "Hello, world!"
+}
+
+:2016 {
+	respond "Goodbye, world!"
+}
+
+# ─── Optimi ───
+www.auridux.com {
+	redir https://auridux.com{uri}
+}
+
+auridux.com {
+	@backend path /api/* /health /scrape /scrape-batch
+	reverse_proxy @backend localhost:8000
+
+	root * /opt/optimi/app/dist
+	file_server
+	try_files {path} /index.html
+}
