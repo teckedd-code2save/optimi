@@ -1,21 +1,11 @@
-version: "3.8"
-
 services:
-  # ---------------------------------------------------------------
-  # Python Scraper + AI Backend
-  # ---------------------------------------------------------------
-  # Caddy (on the host) handles:
-  #   - HTTPS (auto Let's Encrypt)
-  #   - Static file serving from app/dist/
-  #   - Reverse proxy /api/*, /health, /scrape → backend:8000
-  # ---------------------------------------------------------------
   backend:
     build:
       context: ./scraper
       dockerfile: Dockerfile
     container_name: optimi-backend
-    expose:
-      - "8000"
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
     restart: unless-stopped
