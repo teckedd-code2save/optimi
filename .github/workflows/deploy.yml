@@ -7,6 +7,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -14,7 +15,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
+          cache: npm
           cache-dependency-path: app/package-lock.json
 
       - name: Build frontend
@@ -23,37 +24,46 @@ jobs:
           npm ci
           npm run build
 
-      - name: Deploy to VPS
+      - name: Copy files to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
           username: root
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: "app/dist/,scraper/,docker-compose.yml,DEPLOY.md"
+          source: "app/dist/,scraper/,docker-compose.yml,Caddyfile"
           target: "/opt/optimi"
           strip_components: 0
 
-      - name: Restart services
+      - name: Restart on VPS
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: root
           key: ${{ secrets.VPS_SSH_KEY }}
+          envs: OPENAI_API_KEY
           script: |
             set -e
             cd /opt/optimi
 
-            # Copy Caddyfile with correct permissions (caddy user can't read root-owned symlinks)
-            cp /opt/optimi/Caddyfile /etc/caddy/Caddyfile
-            chown caddy:caddy /etc/caddy/Caddyfile
+            cat > .env <<EOF
+            OPENAI_API_KEY=${OPENAI_API_KEY}
+            EOF
+            chmod 600 .env
+
+            cp Caddyfile /etc/caddy/Caddyfile
+            chown root:caddy /etc/caddy/Caddyfile
             chmod 644 /etc/caddy/Caddyfile
             caddy fmt --overwrite /etc/caddy/Caddyfile
-            systemctl reload caddy
+            caddy validate --config /etc/caddy/Caddyfile
+            systemctl reload caddy || systemctl restart caddy
 
-            # Rebuild and restart backend
-            docker-compose up -d --build
+            docker compose down
+            docker compose up -d --build
 
-            # Cleanup old images
             docker system prune -f
 
-            echo "Deploy complete at $(date)"
+            curl -f http://localhost:8000/health
+
+            echo "Deploy complete"
