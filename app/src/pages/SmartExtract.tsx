@@ -60,19 +60,47 @@ function detectParserName(url: string): string {
 }
 
 function parserDisplayInfo(name: string): { label: string; icon: React.ReactNode } {
-  switch (name) {
+  const n = name.toLowerCase().replace(/_/g, '-');
+  switch (n) {
     case 'linkedin':
+    case 'linkedin-redirect':
       return { label: 'LinkedIn', icon: <Linkedin size={14} /> };
     case 'twitter':
+    case 'twitter-extractor':
+    case 'twitter-syndication':
+    case 'twitter-oembed':
+    case 'twitter-fallback':
       return { label: 'X / Twitter', icon: <Twitter size={14} /> };
     case 'devpost':
       return { label: 'Devpost', icon: <Code2 size={14} /> };
-    case 'googleForms':
+    case 'googleforms':
+    case 'google-forms':
       return { label: 'Google Forms', icon: <Globe size={14} /> };
     case 'known-url':
+    case 'known-urls':
       return { label: 'Known URL', icon: <CheckCircle2 size={14} /> };
-    default:
+    case 'reddit':
+    case 'reddit-fallback':
+      return { label: 'Reddit', icon: <Globe size={14} /> };
+    case 'indiehackers':
+    case 'indie-hackers':
+      return { label: 'Indie Hackers', icon: <Globe size={14} /> };
+    case 'hackernews':
+    case 'hackernews-fallback':
+      return { label: 'Hacker News', icon: <Globe size={14} /> };
+    case 'github':
+    case 'github-fallback':
+      return { label: 'GitHub', icon: <Globe size={14} /> };
+    case 'twitter-api':
+      return { label: 'X / Twitter API', icon: <Twitter size={14} /> };
+    case 'producthunt':
+      return { label: 'Product Hunt', icon: <Globe size={14} /> };
+    case 'generic':
+    case 'generic-extractor':
+    case 'generic-fallback':
       return { label: 'Generic', icon: <Globe size={14} /> };
+    default:
+      return { label: n.charAt(0).toUpperCase() + n.slice(1), icon: <Globe size={14} /> };
   }
 }
 
@@ -108,6 +136,17 @@ function confidenceLabel(score: number): { label: string; color: string } {
   if (score >= 0.8) return { label: 'High confidence', color: 'var(--accent-success)' };
   if (score >= 0.5) return { label: 'Medium confidence', color: 'var(--accent-warning)' };
   return { label: 'Low confidence — please review', color: 'var(--accent-danger)' };
+}
+
+function generateId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 function generateChecklist(type: OpportunityType | null): string[] {
@@ -187,15 +226,24 @@ export function SmartExtract() {
     let parsed: ParsedOpportunity;
 
     try {
-      if (settings.backendUrl) {
-        // Use Python backend for full scraping power
-        await pushLog(setLogs, 'processing', 'Sending to backend scraper...');
-        parsed = await scrapeUrl(settings.backendUrl, inputUrl);
-        await pushLog(setLogs, 'success', `Backend extraction complete (${parsed.parserUsed})`);
-      } else if (parserName === 'known-url') {
+      // Strategy: known URLs first (perfect data, no network needed)
+      if (parserName === 'known-url') {
         await pushLog(setLogs, 'success', 'Full metadata match from curated database');
         parsed = await parser!.parse(inputUrl);
-      } else if (parserName === 'generic') {
+      }
+      // Strategy: backend for heavy lifting (if configured)
+      else if (settings.backendUrl) {
+        await pushLog(setLogs, 'processing', 'Sending to backend scraper...');
+        try {
+          parsed = await scrapeUrl(settings.backendUrl, inputUrl);
+          await pushLog(setLogs, 'success', `Backend extraction complete (${parsed.parserUsed || 'backend'})`);
+        } catch (backendErr) {
+          await pushLog(setLogs, 'warning', `Backend failed (${backendErr instanceof Error ? backendErr.message : 'unknown'}), falling back to client-side...`);
+          parsed = await parser!.parse(inputUrl);
+        }
+      }
+      // Strategy: client-side generic extraction
+      else if (parserName === 'generic') {
         await pushLog(setLogs, 'processing', 'Fetching page via CORS proxy...');
         parsed = await parser!.parse(inputUrl);
         if (parsed.parserUsed === 'generic-fallback') {
@@ -203,8 +251,9 @@ export function SmartExtract() {
         } else {
           await pushLog(setLogs, 'success', `Extracted ${parsed.title ? 'title' : ''}${parsed.title && parsed.description ? ' + ' : ''}${parsed.description ? 'description' : ''} from HTML`);
         }
-      } else {
-        // LinkedIn, Twitter, Devpost, Google Forms — URL-based only
+      }
+      // Strategy: URL-based parsers (LinkedIn, Twitter, etc.)
+      else {
         await pushLog(setLogs, 'processing', 'Parsing URL structure...');
         parsed = await parser!.parse(inputUrl);
         await pushLog(setLogs, 'warning', 'Client-side extraction — limited to URL metadata');
@@ -268,7 +317,7 @@ export function SmartExtract() {
     if (!result) return;
     const form = isEditing ? editForm : {};
     const opp: Opportunity = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       title: (form.title ?? result.title ?? 'Untitled Opportunity'),
       organization: (form.organization ?? result.organization ?? 'Unknown'),
       type: (form.type ?? result.type ?? 'other') as OpportunityType,
@@ -279,7 +328,7 @@ export function SmartExtract() {
       requirements: (form.requirements ?? result.requirements ?? checklist),
       prizes: (form.prizes ?? result.prizes) || undefined,
       location: (form.location ?? result.location) || undefined,
-      checklist: checklist.map((text, i) => ({ id: crypto.randomUUID(), text, completed: checkedItems.has(i) })),
+      checklist: checklist.map((text, i) => ({ id: generateId(), text, completed: checkedItems.has(i) })),
       notes: '',
       dateAdded: new Date().toISOString(),
       parsedFrom: result.url,
@@ -321,7 +370,12 @@ export function SmartExtract() {
   };
 
   const isValidUrl = (() => {
-    try { new URL(url); return true; } catch { return url.includes('http'); }
+    try {
+      const u = new URL(url);
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {
+      return false;
+    }
   })();
 
   return (
@@ -780,24 +834,33 @@ export function SmartExtract() {
         )}
       </AnimatePresence>
 
-      {/* ============ ERROR CARD ============ */}
+      {/* ============ LOW-CONFIDENCE WARNING CARD ============ */}
       <AnimatePresence>
-        {result && !isExtracting && result.confidence < 0.2 && result.title === null && (
+        {result && !isExtracting && result.confidence < 0.2 && !result.title && (
           <motion.div
-            key="error-card"
+            key="warning-card"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
             className="mt-6"
           >
-            <div className="rounded-xl p-5 border flex items-start gap-4" style={{ backgroundColor: '#fff1f2', borderColor: 'var(--accent-danger)' }}>
-              <AlertTriangle size={24} className="text-[var(--accent-danger)] shrink-0 mt-0.5" />
-              <div>
-                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Couldn&apos;t extract from this URL</h3>
-                <p className="text-xs text-[var(--text-secondary)] mt-1">
-                  The generic parser could not find structured data. Try a different URL or add details manually.
-                </p>
+            <div className="rounded-xl p-5 border flex flex-col sm:flex-row sm:items-center gap-4" style={{ backgroundColor: '#fffbeb', borderColor: '#f59e0b' }}>
+              <div className="flex items-start gap-3 flex-1">
+                <AlertTriangle size={22} className="text-[#f59e0b] shrink-0 mt-0.5" />
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">Limited auto-extraction</h3>
+                  <p className="text-xs text-[var(--text-secondary)] mt-1">
+                    This site blocks automated reading (CORS). You can still save the URL and fill in the details yourself.
+                  </p>
+                </div>
               </div>
+              <button
+                onClick={handleAddToTracker}
+                className="btn-primary shrink-0 inline-flex items-center justify-center gap-2 text-xs py-2 px-4"
+              >
+                <Plus size={14} />
+                Save URL to Tracker
+              </button>
             </div>
           </motion.div>
         )}

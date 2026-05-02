@@ -994,7 +994,7 @@ export function Home() {
       {/* Floating Action Button (mobile only) */}
       <button
         onClick={() => setShowAddModal(true)}
-        className="sm:hidden fixed bottom-6 right-6 w-14 h-14 bg-[var(--accent-primary)] text-white rounded-full shadow-lg flex items-center justify-center hover:bg-[var(--accent-primary-hover)] active:scale-95 transition-all z-40"
+        className="sm:hidden fixed bottom-6 right-6 w-14 h-14 bg-[var(--accent-primary)] text-white rounded-full shadow-lg flex items-center justify-center hover:bg-[var(--accent-primary-hover)] active:scale-95 transition-all z-[60]"
         aria-label="Add opportunity"
       >
         <Plus className="w-6 h-6" />

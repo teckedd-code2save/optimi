@@ -174,14 +174,15 @@ class GenericExtractor(BaseExtractor):
         """Return a minimal result derived only from the URL itself.
 
         Used when the page cannot be fetched or parsed.
+        Does NOT synthesise a fake title — that prevents callers from
+        detecting true extraction failures.
         """
         opp = self._base_opportunity(url)
         domain = extract_domain(url)
-        opp.title = f"Opportunity at {domain}"
         opp.organization = domain
         opp.description = f"Could not fetch details from {url}. The site may block automated access."
         opp.raw_text = opp.description
-        opp.confidence = 0.1
+        opp.confidence = 0.05
         opp.extraction_method = "generic_fallback"
         return opp
 

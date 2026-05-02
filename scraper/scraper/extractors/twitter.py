@@ -1,12 +1,10 @@
 """
 Twitter / X post extractor.
 
-Uses Twitter's public oEmbed endpoint (publish.twitter.com) to fetch tweet
-content without authentication. This is more reliable than Nitter, which has
-largely shut down.
-
-Fallback: If oEmbed fails, extracts whatever information is available from
-the URL itself (username + tweet ID).
+Uses multiple public strategies to extract tweet content without authentication:
+1. Twitter Syndication API (cdn.syndication.twimg.com) — JSON, no auth, most reliable
+2. oEmbed endpoint (publish.twitter.com) — HTML embed, public
+3. URL-based fallback — username + tweet ID only
 """
 
 import logging
@@ -32,6 +30,7 @@ from .base import BaseExtractor
 logger = logging.getLogger(__name__)
 
 OEMBED_URL = "https://publish.twitter.com/oembed"
+SYNDICATION_URL = "https://cdn.syndication.twimg.com/tweet-result"
 
 
 class TwitterExtractor(BaseExtractor):
@@ -55,7 +54,22 @@ class TwitterExtractor(BaseExtractor):
             opp.organization = f"@{username}"
 
         # ------------------------------------------------------------------
-        # Attempt 1: oEmbed API (public, no auth)
+        # Attempt 1: Syndication API (public JSON, no auth)
+        # ------------------------------------------------------------------
+        synd_result = self._try_syndication(tweet_id) if tweet_id else None
+        if synd_result:
+            tweet_text, author_name, created_at = synd_result
+            opp.description = tweet_text
+            opp.raw_text = tweet_text
+            if author_name and not opp.organization:
+                opp.organization = author_name
+            opp.confidence = 0.8
+            self._enrich_from_text(opp)
+            logger.info("TwitterExtractor: success via Syndication for %s", url)
+            return opp
+
+        # ------------------------------------------------------------------
+        # Attempt 2: oEmbed API (public, no auth)
         # ------------------------------------------------------------------
         oembed_result = self._try_oembed(url)
         if oembed_result:
@@ -72,16 +86,58 @@ class TwitterExtractor(BaseExtractor):
         # ------------------------------------------------------------------
         # Fallback: URL-based partial extraction
         # ------------------------------------------------------------------
-        logger.warning("TwitterExtractor: oEmbed failed for %s, returning partial", url)
+        logger.warning("TwitterExtractor: all methods failed for %s, returning partial", url)
         opp.description = (
             f"Twitter/X post by {username or 'unknown'}"
             f" (tweet ID: {tweet_id or 'unknown'})."
-            " Unable to fetch content from oEmbed."
+            " Unable to fetch content."
         )
         opp.raw_text = opp.description
         opp.confidence = 0.2
         opp.extraction_method = "twitter_fallback"
         return opp
+
+    # ------------------------------------------------------------------
+    # Syndication API helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _try_syndication(tweet_id: str) -> Optional[tuple]:
+        """Call Twitter's public syndication endpoint and extract tweet data.
+
+        Returns:
+            Tuple of (tweet_text, author_name, created_at) or *None*.
+        """
+        session = get_retry_session(retries=1)
+        api_url = f"{SYNDICATION_URL}?id={tweet_id}&lang=en"
+        logger.debug("Trying syndication: %s", api_url)
+
+        resp = safe_get(session, api_url, timeout=10)
+        if resp is None:
+            return None
+
+        try:
+            data = resp.json()
+        except Exception as exc:
+            logger.debug("Syndication JSON parse failed: %s", exc)
+            return None
+
+        text = data.get("text")
+        if not text:
+            # Some tweets have text in display_text_range format
+            full_text = data.get("text", "")
+            if not full_text:
+                return None
+            text = full_text
+
+        author = data.get("user", {})
+        author_name = author.get("name") or author.get("screen_name")
+        created_at = data.get("created_at")
+
+        cleaned = clean_text(text)
+        if cleaned:
+            return cleaned, author_name, created_at
+        return None
 
     # ------------------------------------------------------------------
     # oEmbed helpers
@@ -94,11 +150,13 @@ class TwitterExtractor(BaseExtractor):
         Returns:
             Tuple of (tweet_text, author_name) or *None*.
         """
-        session = get_retry_session(retries=2)
-        api_url = f"{OEMBED_URL}?url={url}&omit_script=true&dnt=true"
+        from urllib.parse import quote
+
+        session = get_retry_session(retries=1)
+        api_url = f"{OEMBED_URL}?url={quote(url, safe='')}&omit_script=true&dnt=true"
         logger.debug("Trying oEmbed: %s", api_url)
 
-        resp = safe_get(session, api_url, timeout=15)
+        resp = safe_get(session, api_url, timeout=10)
         if resp is None:
             return None
 
@@ -123,11 +181,9 @@ class TwitterExtractor(BaseExtractor):
         """Extract plain tweet text from oEmbed HTML blockquote."""
         try:
             soup = BeautifulSoup(html, "html.parser")
-            # The tweet text lives inside <p lang="..."> inside the blockquote
             tweet_p = soup.find("p", class_=lambda x: x is None or "tweet" in x)
             if tweet_p:
                 return clean_text(tweet_p.get_text(separator=" "))
-            # Fallback: any paragraph inside the blockquote
             blockquote = soup.find("blockquote")
             if blockquote:
                 first_p = blockquote.find("p")
@@ -145,22 +201,18 @@ class TwitterExtractor(BaseExtractor):
     def _enrich_from_text(opp: ScrapedOpportunity) -> None:
         """Derive additional fields from the tweet text."""
         text = opp.description or ""
-        # URLs inside the tweet often point to the real opportunity
         urls = extract_urls_from_text(text)
         if urls and not opp.application_url:
             opp.application_url = urls[0]
 
-        # Deadline detection
         deadlines = find_deadlines(text)
         if deadlines:
             normalized = normalize_deadline(deadlines[0])
             if normalized:
                 opp.deadline = normalized
 
-        # Type classification
         opp.opportunity_type = classify_opportunity_type(text)
 
-        # Title: first sentence or first 80 chars
         if text:
             first_sentence = re.split(r"[.!?…]", text, maxsplit=1)[0].strip()
             opp.title = first_sentence[:120] if len(first_sentence) > 120 else first_sentence

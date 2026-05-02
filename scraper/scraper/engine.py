@@ -13,16 +13,34 @@ from typing import List, Optional, Type
 from .models import ScrapedOpportunity
 from .extractors.base import BaseExtractor
 from .extractors.twitter import TwitterExtractor
+from .extractors.twitter_api import TwitterAPIExtractor
 from .extractors.generic import GenericExtractor
 from .extractors.linkedin import LinkedInRedirectExtractor
 from .extractors.google_forms import GoogleFormsExtractor
+from .extractors.devpost import DevpostExtractor
+from .extractors.known_urls import KnownUrlsExtractor
+from .extractors.reddit import RedditExtractor
+from .extractors.indiehackers import IndieHackersExtractor
+from .extractors.hackernews import HackerNewsExtractor
+from .extractors.github import GitHubExtractor
+from .extractors.producthunt import ProductHuntExtractor
 
 logger = logging.getLogger(__name__)
 
 # Order matters — more specific extractors should come first.
+# Optional API extractors (TwitterAPI, ProductHunt) are placed before
+# their free counterparts so they take priority when credentials exist.
 DEFAULT_EXTRACTORS: List[Type[BaseExtractor]] = [
+    KnownUrlsExtractor,
     LinkedInRedirectExtractor,
     GoogleFormsExtractor,
+    HackerNewsExtractor,
+    GitHubExtractor,
+    RedditExtractor,
+    IndieHackersExtractor,
+    ProductHuntExtractor,
+    DevpostExtractor,
+    TwitterAPIExtractor,
     TwitterExtractor,
     GenericExtractor,
 ]
@@ -222,6 +240,6 @@ class ScrapingEngine:
             source_url=url,
             extraction_method="error",
             confidence=0.0,
-            title="Extraction failed",
+            title=None,
             description=f"Could not extract any data from {url}. Reason: {reason}",
         )

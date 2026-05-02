@@ -4,6 +4,10 @@ import type { ParsedOpportunity, OpportunityType } from '@/types';
 /**
  * Known URLs with verified landing pages.
  * These are real URLs that we can confidently extract metadata for.
+ *
+ * Security note: matching is done by exact hostname (or hostname ending
+ * with the registered domain). Never use substring matching on the full URL
+ * — that would match malicious query parameters.
  */
 const KNOWN_URLS: Record<string, ParsedOpportunity> = {
   'usaii-global-ai-hackathon-2026.devpost.com': {
@@ -60,21 +64,46 @@ const KNOWN_URLS: Record<string, ParsedOpportunity> = {
   },
 };
 
+/** Check whether a hostname ends with a given domain suffix. */
+function hostnameMatches(hostname: string, key: string): boolean {
+  // key may contain a path like "cloud.google.com/startup"
+  const domainPart = key.split('/')[0].toLowerCase();
+  const host = hostname.toLowerCase();
+  return host === domainPart || host.endsWith('.' + domainPart);
+}
+
+/** Check whether the URL path starts with the key's path (if any). */
+function pathMatches(urlPath: string, key: string): boolean {
+  const parts = key.split('/');
+  if (parts.length <= 1) return true; // no path restriction
+  const keyPath = '/' + parts.slice(1).join('/');
+  return urlPath === keyPath || urlPath.startsWith(keyPath + '/');
+}
+
 export const knownUrlParser: UrlParser = {
   name: 'known-url',
   domains: Object.keys(KNOWN_URLS),
   canParse: (url: string) => {
     try {
-      const hostname = new URL(url).hostname;
-      return Object.keys(KNOWN_URLS).some((key) => hostname.includes(key.split('/')[0]));
+      const { hostname, pathname } = new URL(url);
+      return Object.keys(KNOWN_URLS).some((key) =>
+        hostnameMatches(hostname, key) && pathMatches(pathname, key)
+      );
     } catch {
-      return Object.keys(KNOWN_URLS).some((key) => url.includes(key));
+      return false;
     }
   },
   parse: (url: string) => {
-    const match = Object.entries(KNOWN_URLS).find(([key]) => url.includes(key));
-    if (match) {
-      return { ...match[1], url };
+    try {
+      const { hostname, pathname } = new URL(url);
+      const match = Object.entries(KNOWN_URLS).find(([key]) =>
+        hostnameMatches(hostname, key) && pathMatches(pathname, key)
+      );
+      if (match) {
+        return { ...match[1], url };
+      }
+    } catch {
+      // Invalid URL — fall through to empty result
     }
     return {
       title: null,

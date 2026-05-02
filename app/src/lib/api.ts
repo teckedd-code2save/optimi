@@ -30,10 +30,23 @@ export interface ScrapeResponse extends ParsedOpportunity {}
 function getBaseUrl(backendUrl: string): string {
   const url = backendUrl.trim();
   if (!url) {
-    // If no backend configured, try same-origin /api (for docker-compose setup)
     return '';
   }
   return url.replace(/\/$/, '');
+}
+
+function sanitizeError(text: string): string {
+  const clean = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return clean.slice(0, 120) || 'Request failed';
+}
+
+function mapBackendFields(data: any): ScrapeResponse {
+  return {
+    ...data,
+    url: data.source_url || data.url || data.sourceUrl,
+    type: data.opportunity_type || data.type || data.opportunityType,
+    parserUsed: data.extraction_method || data.parserUsed || data.extractionMethod || 'backend',
+  };
 }
 
 export async function checkAIStatus(backendUrl: string): Promise<boolean> {
@@ -52,7 +65,7 @@ export async function generateAI(
   backendUrl: string,
   req: AIGenerateRequest
 ): Promise<AIGenerateResponse> {
-  const base = await getBaseUrl(backendUrl);
+  const base = getBaseUrl(backendUrl);
   const res = await fetch(`${base}/api/ai/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -61,13 +74,13 @@ export async function generateAI(
   });
   if (!res.ok) {
     const text = await res.text().catch(() => 'Unknown error');
-    throw new Error(text);
+    throw new Error(sanitizeError(text));
   }
   return res.json();
 }
 
 export async function scrapeUrl(backendUrl: string, url: string): Promise<ScrapeResponse> {
-  const base = await getBaseUrl(backendUrl);
+  const base = getBaseUrl(backendUrl);
   const res = await fetch(`${base}/scrape`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -76,7 +89,8 @@ export async function scrapeUrl(backendUrl: string, url: string): Promise<Scrape
   });
   if (!res.ok) {
     const text = await res.text().catch(() => 'Unknown error');
-    throw new Error(text);
+    throw new Error(sanitizeError(text));
   }
-  return res.json();
+  const data = await res.json();
+  return mapBackendFields(data);
 }

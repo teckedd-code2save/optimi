@@ -1,7 +1,9 @@
 import { useState, useMemo } from 'react';
 import type { ChangeEvent } from 'react';
-import type { OpportunityType } from '@/types';
+import type { OpportunityType, ParsedOpportunity } from '@/types';
 import { useAppStore } from '@/store/useAppStore';
+import { parseUrl } from '@/lib/parsers/index';
+import { scrapeUrl } from '@/lib/api';
 import { TypeBadge } from '@/components/TypeBadge';
 import { DeadlineBadge } from '@/components/DeadlineBadge';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -28,6 +30,9 @@ import {
   Calendar,
   SlidersHorizontal,
   Info,
+  Loader2,
+  Link2,
+  AlertTriangle,
 } from 'lucide-react';
 
 /* ------------------------------------------------------------------ */
@@ -147,7 +152,12 @@ export function OpportunityFinder() {
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<SortOption>('deadline');
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [showTipModal, setShowTipModal] = useState(false);
+  const [tipUrl, setTipUrl] = useState('');
+  const [isSubmittingTip, setIsSubmittingTip] = useState(false);
   const addOpportunity = useAppStore((s) => s.addOpportunity);
+  const settings = useAppStore((s) => s.settings);
+  const addExtractHistory = useAppStore((s) => s.addExtractHistory);
 
   const filtered = useMemo(() => {
     let data = [...CURATED_OPPORTUNITIES];
@@ -213,6 +223,86 @@ export function OpportunityFinder() {
   };
 
   const handleSearchClear = () => setSearch('');
+
+  const handleSubmitTip = async () => {
+    const raw = tipUrl.trim();
+    if (!raw) return;
+
+    let url = raw;
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+
+    try {
+      new URL(url);
+    } catch {
+      toast.error('Please enter a valid URL');
+      return;
+    }
+
+    setIsSubmittingTip(true);
+    const toastId = toast.loading('Extracting opportunity details...');
+
+    let parsed: ParsedOpportunity | null = null;
+    let extractionFailed = false;
+
+    try {
+      // Try backend first if configured
+      if (settings.backendUrl) {
+        try {
+          parsed = await scrapeUrl(settings.backendUrl, url);
+        } catch {
+          parsed = await parseUrl(url);
+        }
+      } else {
+        parsed = await parseUrl(url);
+      }
+    } catch {
+      extractionFailed = true;
+    }
+
+    // Always save — even if extraction completely failed
+    const title = parsed?.title || 'Untitled Opportunity';
+    const org = parsed?.organization || new URL(url).hostname.replace(/^www\./, '').split('.')[0];
+    const confidence = parsed?.confidence ?? 0;
+
+    addOpportunity({
+      id: generateId(),
+      title,
+      organization: org,
+      type: parsed?.type || 'other',
+      status: 'saved',
+      url,
+      deadline: parsed?.deadline ?? null,
+      description: parsed?.description || `Opportunity found at ${url}`,
+      requirements: parsed?.requirements || [],
+      prizes: parsed?.prizes || undefined,
+      location: parsed?.location || undefined,
+      checklist: [],
+      notes: '',
+      dateAdded: new Date().toISOString(),
+      parsedFrom: url,
+      extractionConfidence: confidence,
+    });
+
+    addExtractHistory({
+      url,
+      title,
+      date: new Date().toISOString(),
+      added: true,
+    });
+
+    if (extractionFailed || confidence < 0.2) {
+      toast.success(
+        `Saved URL to tracker. We couldn't auto-read this page — tap the card in your dashboard to add details.`,
+        { id: toastId, duration: 5000 }
+      );
+    } else {
+      toast.success(`"${title}" added to your tracker!`, { id: toastId });
+    }
+
+    setTipUrl('');
+    setShowTipModal(false);
+    setIsSubmittingTip(false);
+  };
 
   return (
     <div className="p-4 lg:p-8">
@@ -484,13 +574,101 @@ export function OpportunityFinder() {
             </p>
           </div>
           <button
-            onClick={() => toast.info('Coming soon!')}
+            onClick={() => setShowTipModal(true)}
             className="btn-primary mt-4 sm:mt-0 inline-flex items-center justify-center gap-2"
           >
             <Send size={14} />
             Submit a Tip
           </button>
         </motion.div>
+
+        {/* ============ SUBMIT TIP MODAL ============ */}
+        <AnimatePresence>
+          {showTipModal && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+              style={{ backgroundColor: 'rgba(0,0,0,0.45)' }}
+              onClick={(e) => { if (e.target === e.currentTarget) setShowTipModal(false); }}
+            >
+              <motion.div
+                initial={{ scale: 0.92, opacity: 0, y: 12 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.92, opacity: 0, y: 12 }}
+                transition={{ duration: 0.2, ease: easeSpring }}
+                className="bg-[var(--bg-surface)] rounded-2xl border border-[var(--border-default)] shadow-2xl w-full max-w-md overflow-hidden"
+              >
+                <div className="px-6 pt-6 pb-4 border-b border-[var(--border-default)] flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-[var(--accent-primary)]/10 flex items-center justify-center">
+                      <Send size={16} className="text-[var(--accent-primary)]" />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-semibold text-[var(--text-primary)]">Submit a Tip</h3>
+                      <p className="text-xs text-[var(--text-secondary)]">Paste a URL and we&apos;ll extract the details</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowTipModal(false)}
+                    className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="px-6 py-5 space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">Opportunity URL</label>
+                    <div className="relative">
+                      <Link2 size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-tertiary)]" />
+                      <input
+                        type="url"
+                        value={tipUrl}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) => setTipUrl(e.target.value)}
+                        placeholder="https://example.com/hackathon"
+                        className="w-full h-11 pl-10 pr-4 bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-primary)] focus:shadow-[0_0_0_3px_rgba(79,70,229,0.08)] transition-all"
+                        onKeyDown={(e) => { if (e.key === 'Enter' && tipUrl.trim() && !isSubmittingTip) handleSubmitTip(); }}
+                      />
+                    </div>
+                    <p className="text-[11px] text-[var(--text-tertiary)] mt-1.5 flex items-center gap-1">
+                      <AlertTriangle size={11} />
+                      The opportunity will be added to your personal tracker.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="px-6 pb-6 pt-2 flex gap-3">
+                  <button
+                    onClick={() => setShowTipModal(false)}
+                    className="btn-secondary flex-1 py-2.5 text-sm"
+                    disabled={isSubmittingTip}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSubmitTip}
+                    disabled={!tipUrl.trim() || isSubmittingTip}
+                    className="btn-primary flex-1 py-2.5 text-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isSubmittingTip ? (
+                      <>
+                        <Loader2 size={14} className="animate-spin" />
+                        Extracting...
+                      </>
+                    ) : (
+                      <>
+                        <Zap size={14} />
+                        Extract & Save
+                      </>
+                    )}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

@@ -20,13 +20,14 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 try:
-    from fastapi import FastAPI
+    from fastapi import FastAPI, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover
@@ -128,36 +129,39 @@ class AIStatusResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 @app.get("/health")
-def health() -> dict:
+async def health() -> dict:
     return {"status": "ok", "service": "optimi-scraper", "version": "0.2.0"}
 
 
 @app.post("/scrape", response_model=ScrapeResponse)
-def scrape(req: ScrapeRequest) -> ScrapeResponse:
+async def scrape(req: ScrapeRequest) -> ScrapeResponse:
     """Scrape a single URL and return structured opportunity data."""
     engine = _get_engine()
-    result = engine.scrape(req.url)
+    result = await asyncio.to_thread(engine.scrape, req.url)
     return _to_response(result)
 
 
 @app.post("/scrape-batch", response_model=List[ScrapeResponse])
-def scrape_batch(req: ScrapeBatchRequest) -> List[ScrapeResponse]:
+async def scrape_batch(req: ScrapeBatchRequest) -> List[ScrapeResponse]:
     """Scrape multiple URLs sequentially."""
     engine = _get_engine()
-    results = engine.scrape_multiple(req.urls)
+    results = await asyncio.to_thread(engine.scrape_multiple, req.urls)
     return [_to_response(r) for r in results]
 
 
 @app.get("/api/ai/status", response_model=AIStatusResponse)
-def ai_status() -> AIStatusResponse:
+async def ai_status() -> AIStatusResponse:
     """Check whether the OpenAI integration is configured."""
     return AIStatusResponse(configured=is_configured())
 
 
 @app.post("/api/ai/generate", response_model=AIGenerateResponse)
-def ai_generate(req: AIGenerateRequest) -> AIGenerateResponse:
+async def ai_generate(req: AIGenerateRequest) -> AIGenerateResponse:
     """Generate an application draft using OpenAI."""
-    content = generate_draft(
+    if not is_configured():
+        raise HTTPException(status_code=503, detail="OpenAI not configured on backend. Set OPENAI_API_KEY.")
+    content = await asyncio.to_thread(
+        generate_draft,
         template=req.template,
         tone=req.tone,
         fields=req.fields,

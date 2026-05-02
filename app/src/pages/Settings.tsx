@@ -47,7 +47,7 @@ interface BeforeInstallPromptEvent extends Event {
 const springEase = [0.16, 1, 0.3, 1] as [number, number, number, number];
 
 export function Settings() {
-  const { opportunities, settings, updateSettings, importOpportunities, resetToDefaults } =
+  const { opportunities, settings, updateSettings, importOpportunities, resetToDefaults, extractHistory } =
     useAppStore();
   const [browserNotifEnabled, setBrowserNotifEnabled] = useState(false);
   const [pwaDismissed, setPwaDismissed] = useState(() => {
@@ -107,6 +107,7 @@ export function Settings() {
     const data = {
       opportunities,
       settings,
+      extractHistory,
       exportedAt: new Date().toISOString(),
       version: '2.0.0',
     };
@@ -119,8 +120,8 @@ export function Settings() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    toast.success('Data exported');
-  }, [opportunities, settings]);
+    toast.success('Data exported — import this file on your other device to sync');
+  }, [opportunities, settings, extractHistory]);
 
   const handleImportClick = useCallback(() => {
     fileInputRef.current?.click();
@@ -135,15 +136,21 @@ export function Settings() {
       reader.onload = (ev) => {
         try {
           const data = JSON.parse(ev.target?.result as string);
+          let importedCount = 0;
+
           if (Array.isArray(data.opportunities)) {
             importOpportunities(data.opportunities);
-            toast.success(`Imported ${data.opportunities.length} opportunities`);
+            importedCount = data.opportunities.length;
           } else if (Array.isArray(data)) {
             importOpportunities(data);
-            toast.success(`Imported ${data.length} opportunities`);
-          } else {
-            toast.error('Invalid JSON format');
+            importedCount = data.length;
           }
+
+          if (data.settings && typeof data.settings === 'object') {
+            updateSettings(data.settings);
+          }
+
+          toast.success(`Imported ${importedCount} opportunities${data.settings ? ' + settings' : ''}`);
         } catch {
           toast.error('Failed to parse JSON');
         }
@@ -151,7 +158,7 @@ export function Settings() {
       reader.readAsText(file);
       e.target.value = '';
     },
-    [importOpportunities]
+    [importOpportunities, updateSettings]
   );
 
   const handleClearData = useCallback(() => {
@@ -408,12 +415,25 @@ export function Settings() {
                     toast.info('Enter a backend URL first');
                     return;
                   }
+                  const base = settings.backendUrl.replace(/\/$/, '');
                   try {
-                    const res = await fetch(`${settings.backendUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(5000) });
-                    if (res.ok) {
-                      toast.success('Backend connected');
-                    } else {
+                    const healthRes = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5000) });
+                    if (!healthRes.ok) {
                       toast.error('Backend unreachable');
+                      return;
+                    }
+                    toast.success('Backend connected');
+
+                    if (settings.aiEnabled) {
+                      const aiRes = await fetch(`${base}/api/ai/status`, { signal: AbortSignal.timeout(5000) });
+                      if (aiRes.ok) {
+                        const aiData = await aiRes.json();
+                        if (aiData.configured) {
+                          toast.success('AI is ready');
+                        } else {
+                          toast.warning('AI not configured on backend — add OPENAI_API_KEY');
+                        }
+                      }
                     }
                   } catch {
                     toast.error('Backend unreachable');

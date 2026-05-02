@@ -152,6 +152,24 @@ def is_google_forms_url(url: str) -> bool:
     return domain in ("forms.gle", "docs.google.com") and "forms" in url
 
 
+def is_devpost_url(url: str) -> bool:
+    """Return True if *url* points to Devpost."""
+    domain = extract_domain(url)
+    return domain in ("devpost.com", "devpost.io") or domain.endswith(".devpost.com") or domain.endswith(".devpost.io")
+
+
+def is_reddit_url(url: str) -> bool:
+    """Return True if *url* points to Reddit."""
+    domain = extract_domain(url)
+    return domain in ("reddit.com", "www.reddit.com", "old.reddit.com")
+
+
+def is_indiehackers_url(url: str) -> bool:
+    """Return True if *url* points to Indie Hackers."""
+    domain = extract_domain(url)
+    return domain in ("indiehackers.com", "www.indiehackers.com")
+
+
 def extract_tweet_info(url: str) -> Tuple[Optional[str], Optional[str]]:
     """Parse a Twitter/X URL and return (username, tweet_id) if possible.
 
@@ -293,12 +311,12 @@ def normalize_deadline(date_str: str) -> Optional[str]:
 TYPE_KEYWORDS: Dict[str, List[str]] = {
     "hackathon": [
         "hackathon", "hack", "buildathon", "codeathon", "demo day",
-        "build", "demo", "prototype", "coding competition",
+        "prototype", "coding competition", "hackfest", "codefest",
     ],
     "accelerator": [
         "accelerator", "accelerate", "cohort", "batch", "funding",
         "investment", "seed", "venture", "vc", "demo day",
-        "startup program", "incubator",
+        "startup program", "incubator", "startup",
     ],
     "grant": [
         "grant", "token", "credits", "funding", "award", "scholarship",

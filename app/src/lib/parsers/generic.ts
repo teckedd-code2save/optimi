@@ -9,19 +9,59 @@ const PROXIES = [
   (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
 ];
 
-async function fetchHtml(url: string): Promise<string | null> {
-  // Try direct fetch (rarely works due to CORS, but worth trying)
-  try {
-    const res = await fetch(url, { method: 'GET', redirect: 'follow' });
-    if (res.ok) return await res.text();
-  } catch { /* ignore */ }
+const DIRECT_TIMEOUT = 3000;
+const PROXY_TIMEOUT = 6000;
 
-  // Try CORS proxies
-  for (const makeProxy of PROXIES) {
-    try {
-      const res = await fetch(makeProxy(url), { redirect: 'follow' });
-      if (res.ok) return await res.text();
-    } catch { /* ignore */ }
+/** Error phrases returned by proxies instead of real page content. */
+const PROXY_ERROR_PHRASES = [
+  'access denied',
+  'rate limit',
+  'could not request',
+  'error',
+  'blocked',
+  'too many requests',
+  'forbidden',
+];
+
+function isProxyErrorPage(text: string): boolean {
+  const lower = text.toLowerCase();
+  return PROXY_ERROR_PHRASES.some((p) => lower.includes(p));
+}
+
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response | null> {
+  try {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(url, { method: 'GET', redirect: 'follow', signal: controller.signal });
+    clearTimeout(id);
+    return res;
+  } catch {
+    return null;
+  }
+}
+
+async function tryFetch(url: string, timeoutMs: number): Promise<string | null> {
+  const res = await fetchWithTimeout(url, timeoutMs);
+  if (!res?.ok) return null;
+  const text = await res.text();
+  if (text.length < 200 || isProxyErrorPage(text)) return null;
+  return text;
+}
+
+async function fetchHtml(url: string): Promise<string | null> {
+  // 1. Try direct fetch (fast, rarely works due to CORS)
+  const direct = await tryFetch(url, DIRECT_TIMEOUT);
+  if (direct) return direct;
+
+  // 2. Try CORS proxies in parallel (first to succeed wins)
+  const proxyUrls = PROXIES.map((make) => make(url));
+  const results = await Promise.allSettled(
+    proxyUrls.map((u) => tryFetch(u, PROXY_TIMEOUT))
+  );
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value) {
+      return r.value;
+    }
   }
   return null;
 }
@@ -50,11 +90,13 @@ function extractFromHtml(html: string, url: string): Partial<ParsedOpportunity> 
     doc.querySelector('meta[property="og:site_name"]')?.getAttribute('content') ||
     null;
 
-  // Image (not used yet but extracted)
-  // const image = doc.querySelector('meta[property="og:image"]')?.getAttribute('content');
+  // Body text extraction — critical for deadline/prize/location detection
+  const bodyText = extractBodyText(doc);
+
+  // Combine all text sources for keyword searching
+  const pageText = `${title ?? ''} ${description ?? ''} ${bodyText ?? ''}`;
 
   // Deadline detection
-  const pageText = `${title ?? ''} ${description ?? ''}`;
   const deadline = extractDeadline(pageText);
 
   // Type classification
@@ -73,15 +115,41 @@ function extractFromHtml(html: string, url: string): Partial<ParsedOpportunity> 
     title: cleanText(title),
     organization: siteName ? cleanText(siteName) : extractOrgFromUrl(url),
     type,
-    description: cleanText(description),
+    description: cleanText(description) || cleanText(bodyText)?.slice(0, 500) || null,
     deadline,
     location,
     prizes,
     requirements,
     url,
-    confidence: title && description ? 0.75 : title ? 0.5 : 0.25,
+    confidence: title && description ? 0.75 : title ? 0.5 : bodyText ? 0.35 : 0.25,
     parserUsed: 'generic',
   };
+}
+
+/** Extract readable text from the document body, skipping nav/footer/script. */
+function extractBodyText(doc: Document): string | null {
+  const body = doc.body;
+  if (!body) return null;
+
+  // Clone so we don't mutate the parsed doc
+  const clone = body.cloneNode(true) as HTMLElement;
+
+  // Remove non-content elements
+  const selectors = [
+    'script', 'style', 'nav', 'footer', 'header', 'aside',
+    '[role="banner"]', '[role="navigation"]', '[role="contentinfo"]',
+    '.cookie-banner', '.advertisement', '.ads', '#cookie-banner',
+  ];
+  selectors.forEach((sel) => {
+    clone.querySelectorAll(sel).forEach((el) => el.remove());
+  });
+
+  // Prefer article/main content area if available
+  const contentArea = clone.querySelector('article, main, [role="main"], .content, #content');
+  const el = contentArea || clone;
+  const text = (el as HTMLElement).innerText || el.textContent || '';
+
+  return text.replace(/\s+/g, ' ').trim().slice(0, 8000) || null;
 }
 
 function cleanText(text: string | null): string | null {
@@ -94,6 +162,12 @@ function extractOrgFromUrl(url: string): string | null {
     const hostname = new URL(url).hostname.replace('www.', '');
     const parts = hostname.split('.');
     if (parts.length >= 2) {
+      // For subdomains like usaii-global-ai-hackathon-2026.devpost.com,
+      // prefer the second-level domain (devpost) rather than the subdomain
+      const sld = parts[parts.length - 2];
+      if (sld && sld.length > 1) {
+        return sld.charAt(0).toUpperCase() + sld.slice(1);
+      }
       return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
     }
     return hostname;
@@ -124,8 +198,8 @@ function extractDeadline(text: string): string | null {
 function classifyType(text: string): OpportunityType | null {
   const lower = text.toLowerCase();
   const scores: Record<string, number> = {
-    hackathon: ['hackathon', 'hack', 'buildathon', 'codeathon', 'demo day', 'coding competition'].filter(k => lower.includes(k)).length,
-    accelerator: ['accelerator', 'cohort', 'batch', 'startup program', 'incubator', 'seed', 'venture', 'vc'].filter(k => lower.includes(k)).length,
+    hackathon: ['hackathon', 'hack', 'buildathon', 'codeathon', 'demo day', 'coding competition', 'hackfest', 'codefest'].filter(k => lower.includes(k)).length,
+    accelerator: ['accelerator', 'cohort', 'batch', 'startup program', 'incubator', 'seed', 'venture', 'vc', 'startup'].filter(k => lower.includes(k)).length,
     grant: ['grant', 'credits', 'funding', 'award', 'scholarship', 'stipend', 'bounty', 'prize pool'].filter(k => lower.includes(k)).length,
     job: ['hiring', 'join our team', 'position', 'job', 'employment', 'full-time', 'part-time', 'contract', 'role', 'recruiting'].filter(k => lower.includes(k)).length,
     platform: ['platform', 'subscribe', 'signup', 'early access', 'waitlist', 'beta'].filter(k => lower.includes(k)).length,
@@ -160,6 +234,57 @@ function extractRequirements(text: string): string[] {
     .slice(0, 10);
 }
 
+/** When we can't fetch the page, try to infer metadata from the URL itself. */
+function inferFromUrl(url: string): ParsedOpportunity {
+  let title: string | null = null;
+  let type: OpportunityType | null = null;
+
+  try {
+    const u = new URL(url);
+    const pathParts = u.pathname.split('/').filter(Boolean);
+    const lastPart = pathParts[pathParts.length - 1] || '';
+
+    // Try to build a title from the last path segment
+    if (lastPart && lastPart.length > 2 && !lastPart.includes('.')) {
+      title = lastPart
+        .replace(/[-_]+/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    // Infer type from path keywords
+    const pathAndHost = (u.pathname + ' ' + u.hostname).toLowerCase();
+    if (pathAndHost.includes('hackathon') || pathAndHost.includes('hack')) {
+      type = 'hackathon';
+    } else if (pathAndHost.includes('grant') || pathAndHost.includes('scholarship') || pathAndHost.includes('funding')) {
+      type = 'grant';
+    } else if (pathAndHost.includes('accelerator') || pathAndHost.includes('startup') || pathAndHost.includes('cohort')) {
+      type = 'accelerator';
+    } else if (pathAndHost.includes('job') || pathAndHost.includes('career') || pathAndHost.includes('hiring')) {
+      type = 'job';
+    } else if (pathAndHost.includes('passport') || pathAndHost.includes('visa') || pathAndHost.includes('government')) {
+      type = 'government';
+    } else if (pathAndHost.includes('platform') || pathAndHost.includes('beta') || pathAndHost.includes('waitlist')) {
+      type = 'platform';
+    }
+  } catch {
+    // ignore
+  }
+
+  return {
+    title,
+    organization: extractOrgFromUrl(url),
+    type,
+    description: null,
+    deadline: null,
+    location: null,
+    prizes: null,
+    requirements: [],
+    url,
+    confidence: title || type ? 0.25 : 0.15,
+    parserUsed: 'generic-fallback',
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Parser export                                                      */
 /* ------------------------------------------------------------------ */
@@ -173,18 +298,6 @@ export const genericParser: UrlParser = {
       return extractFromHtml(html, url) as ParsedOpportunity;
     }
     // Fallback: URL-based minimal extraction
-    return {
-      title: null,
-      organization: extractOrgFromUrl(url),
-      type: null,
-      description: null,
-      deadline: null,
-      location: null,
-      prizes: null,
-      requirements: [],
-      url,
-      confidence: 0.1,
-      parserUsed: 'generic-fallback',
-    };
+    return inferFromUrl(url);
   },
 };
